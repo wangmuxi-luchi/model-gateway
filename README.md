@@ -8,10 +8,10 @@
 - 提供 `/v1/models`，聚合所有 Provider 的模型列表并按模型 ID 去重。
 - 支持多个 Provider，每个 Provider 由 `baseUrl`、可选 `apiKey`、模型覆盖和优先级组成。
 - 按优先级选择 Provider，并支持 429、5xx、网络错误和超时的 fallback。
-- 按 Provider 和模型维护健康状态、失败次数、冷却时间和下一次探测时间。
+- 按 Provider 和模型维护健康状态、失败次数、冷却时间和下一次探测时间；冷却到期后由下一次正常请求触发受锁保护的半开放探测。
 - 支持管理页面：新增、编辑、删除 Provider，查看模型，手动健康探测和通信历史。
-- 支持 `/models` 缓存，已有缓存不会重复请求上游。
-- 提供下游和上游通信日志，管理页面中每条记录可折叠展开。
+- 支持进程内 `/models` 缓存，已有缓存不会重复请求上游；重启后缓存清空，管理接口可使用 `refresh=1` 强制刷新。
+- 提供下游和上游通信日志，管理页面中每条通信记录可折叠展开。
 - 启动命令行显示请求路由、上游发送、上游响应和下游响应等关键节点。
 - 日志和管理 API 会隐藏 API Key、Authorization 和 Cookie。
 - 支持可选的网关管理 token。
@@ -36,15 +36,23 @@ npm install
 
 当前项目没有运行时依赖，执行该命令主要用于保持标准 npm 工作流。
 
-### 2. 创建配置
+### 2. 启动服务
 
-复制示例配置：
+网关支持空配置首次启动，不需要预先创建或编辑 `model-gateway.json`：
 
 ```powershell
-Copy-Item config.example.json model-gateway.json
+npm start
 ```
 
-编辑 `model-gateway.json`，至少配置一个 Provider：
+启动后打开管理页面：
+
+```text
+http://127.0.0.1:8787/
+```
+
+点击“添加 Provider”，填写 Provider 名称、Base URL、API Key、模型覆盖和优先级，保存后配置会自动写入 `model-gateway.json`。
+
+也可以选择手动创建配置文件。此时可以复制示例配置并编辑 `model-gateway.json`：
 
 ```json
 {
@@ -67,11 +75,7 @@ Copy-Item config.example.json model-gateway.json
 
 `model-gateway.json` 已加入 `.gitignore`，不要将包含真实密钥的配置提交到 Git。
 
-### 3. 启动服务
-
-```powershell
-npm start
-```
+### 3. 配置客户端
 
 默认监听：
 
@@ -80,8 +84,6 @@ http://127.0.0.1:8787
 ```
 
 打开 `http://127.0.0.1:8787/` 可进入 Provider 管理页面。
-
-### 4. 配置客户端
 
 将客户端的 OpenAI-compatible Base URL 指向：
 
@@ -180,7 +182,9 @@ GET  /v1/models
 POST /v1/chat/completions
 ```
 
-`GET /v1/models` 会使用每个 Provider 的模型缓存；无缓存时查询上游 `/models`，然后合并并去重。
+`GET /v1/models` 会使用每个 Provider 的进程内模型缓存；无缓存时查询上游 `/models`，然后合并并去重。网关重启后缓存会清空。Provider 管理接口使用 `?refresh=1` 时会强制重新查询对应上游。
+
+Provider 进入冷却后，冷却期间的正常请求会跳过该 Provider；`nextProbeAt` 到达后，下一次正常请求允许一个半开放尝试。并发请求不会重复探测同一个 Provider：成功后恢复 `healthy`，失败后重新进入退避冷却。也可以通过管理页面手动点击“探测”立即执行探测。
 
 ### 管理接口
 

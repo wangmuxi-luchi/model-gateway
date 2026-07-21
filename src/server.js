@@ -57,6 +57,7 @@ export function createGateway(config) {
   const probeModel = (item) => item.model || recentRequestModels.get(item.id) || health.latest(item)?.model || modelCache.get(item.id)?.models?.[0]?.id
   const server = createServer(async (req, res) => {
     const id = randomUUID()
+    const halfOpen = new Set()
     try {
       if (req.method === "GET" && req.url === "/") { res.writeHead(200, { "content-type": "text/html; charset=utf-8" }); return res.end(page) }
       if (req.method === "GET" && req.url === "/favicon.ico") { res.writeHead(204); return res.end() }
@@ -132,17 +133,24 @@ export function createGateway(config) {
       const stream = input.stream === true
       let output = false
       const requestedModel = input.model
-       const eligible = config.candidates.filter((candidate) => {
-         const entry = health.get(candidate, candidate.model ?? requestedModel)
-         return !entry || entry.status !== "unsupported" && (!entry.nextProbeAt || entry.nextProbeAt <= Date.now())
+        const eligible = config.candidates.filter((candidate) => {
+          const entry = health.get(candidate, candidate.model ?? requestedModel)
+          if (!entry || entry.status === "unsupported") return !entry
+          if (entry.nextProbeAt && entry.nextProbeAt > Date.now()) return false
+          if (entry.status === "cooldown") {
+            const model = candidate.model ?? requestedModel ?? entry.model
+            if (!health.claimHalfOpen(candidate, model)) return false
+            halfOpen.add(candidate.id)
+          }
+          return true
        })
        if (!eligible.length) {
          console.log(`[gateway] ROUTE BLOCKED request=${id} reason=no-eligible-provider model=${requestedModel ?? "(none)"}`)
          return json(res, 503, { error: "No eligible provider is available" })
        }
        console.log(`[gateway] ROUTE selected=${eligible.map((candidate) => candidate.name ?? candidate.id).join(",")} attempts=${Math.min(config.maxAttempts, eligible.length)}`)
-      const result = await attempt(eligible, config.maxAttempts, config.requestTimeoutMs, async (candidate, signal) => {
-         const model = candidate.model ?? requestedModel
+       const result = await attempt(eligible, config.maxAttempts, config.requestTimeoutMs, async (candidate, signal) => {
+          const model = candidate.model ?? requestedModel
          if (model) recentRequestModels.set(candidate.id, model)
         const started = Date.now()
         const account = { credential: { key: await providerKey(candidate) } }
@@ -157,8 +165,8 @@ export function createGateway(config) {
           const error = Object.assign(new Error(`Upstream rejected request (${upstream.status})`), { status: upstream.status, nonRetry: true })
           throw error
         }
-        if (!upstream.ok) { await health.failure(candidate, model, `http-${upstream.status}`); return upstream }
-        await health.success(candidate, model, Date.now() - started)
+         if (!upstream.ok) { await health.failure(candidate, model, `http-${upstream.status}`); return upstream }
+         await health.success(candidate, model, Date.now() - started)
         if (!stream) return upstream
         res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" })
         try {
@@ -171,8 +179,9 @@ export function createGateway(config) {
           throw error
         }
         res.end()
-        return { ok: true, status: 200 }
-      })
+         return { ok: true, status: 200 }
+       })
+       for (const candidate of eligible) if (halfOpen.has(candidate.id)) health.release(candidate, candidate.model ?? requestedModel)
       if (result.errors.length) { stats.failures += result.errors.length; stats.retries += result.errors.length; record({ type: "fallback", request: id, selected: result.candidate.id, errors: result.errors }) }
       else record({ type: "success", request: id, selected: result.candidate.id })
        if (!stream && result.result.ok) {
@@ -183,6 +192,7 @@ export function createGateway(config) {
       }
       if (stream && !output && !res.writableEnded) json(res, 502, { error: "No stream output" })
      } catch (error) {
+       for (const candidate of config.candidates) if (halfOpen.has(candidate.id)) health.release(candidate, candidate.model ?? requestedModel ?? health.latest(candidate)?.model)
        stats.failures++
        console.log(`[gateway] ERROR request=${id} status=${error.status ?? 502} message=${error.message}`)
       record({ type: "error", request: id, error: error.message, attempts: error.attempts ?? [] })
