@@ -1,0 +1,16 @@
+{
+  "listen": "127.0.0.1:8787",
+  "dataDir": "~/.local/share/model-gateway",
+  "maxAttempts": 3,
+  "requestTimeoutMs": 60000,
+  "candidates": [
+    {
+      "id": "primary",
+       "baseUrl": "https://api.openai.com/v1",
+       "apiKey": "replace-with-api-key",
+      "model": "gpt-4.1",
+      "priority": 10,
+      "timeoutMs": 15000
+    }
+  ]
+}

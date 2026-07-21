@@ -1,0 +1,17 @@
+# Local configuration and credentials
+model-gateway.json
+*.local.json
+.env
+.env.*
+
+# Runtime state
+*.db
+*.db-shm
+*.db-wal
+health.json
+account.json
+logs/
+
+# Dependencies and logs
+node_modules/
+*.log
