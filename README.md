@@ -240,7 +240,9 @@ Remove-Item Env:MODEL_GATEWAY_CONFIG
 
 `build:win` 当前只生成 Windows x64 产物。构建脚本会先将本地源码 bundle，再使用 Node Single Executable Application 注入运行时；发布目录中的 `model-gateway.json`、密钥和 `dataDir` 内容不会被打包。EXE 仍需能够访问已配置的上游 Provider 网络地址。
 
-可选托盘 EXE 会启动同目录下的 `model-gateway.exe`，自动打开管理页面，并提供打开页面、查看状态、打开 `dataDir/logs` 和退出菜单。托盘菜单退出会先通过仅限本机的随机控制令牌请求网关有序停止，再退出托盘；直接启动网关不依赖托盘。持久化日志位于配置的 `dataDir/logs/gateway.log`，内容为摘要且沿用请求头脱敏规则。
+可选托盘 EXE 由独立的 self-contained .NET WinForms GUI helper 构建，不依赖 PowerShell 或目标机上的 .NET。托盘和 EXE 使用 `native/TrayHelper/assets/tray.ico` 中的多尺寸图标资源。它会启动同目录下的 `model-gateway.exe`，等待 `/health` 成功后自动打开管理页面，并提供打开页面、查看状态、打开 `data/logs` 和退出菜单。托盘菜单退出会先通过仅限本机的随机控制令牌请求网关有序停止，再退出托盘；直接启动网关不依赖托盘。`build:win` 会验证网关 PE 子系统为 Console、托盘 PE 子系统为 Windows GUI。托盘诊断日志位于 `data/tray-debug.log`，不记录 API Key 或控制令牌。
+
+托盘诊断日志还会记录托盘自身 PID、托盘启动的网关 PID，以及启动前后监听端口对应的占用 PID。托盘通过受控制令牌保护的 `/__control/health` 确认连接的是自己启动的网关；如果端口已被其他网关实例占用，不会误接管该实例。图标由项目内的 `uv` 虚拟环境和 Pillow 从原始 PNG 转换为多尺寸 ICO；虚拟环境位于 `.venv`，不参与发布构建。
 
 启动时命令行会打印关键通信节点，例如：
 

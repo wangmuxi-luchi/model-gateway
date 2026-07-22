@@ -47,6 +47,8 @@ export function createGateway(config) {
   const controlToken = process.env.MODEL_GATEWAY_CONTROL_TOKEN
   const logFile = join(config.dataDir, "logs", "gateway.log")
   const writeLog = (entry) => appendFile(logFile, JSON.stringify(entry) + "\n").catch(() => {})
+  log(`[gateway] CONTROL_TOKEN configured=${!!controlToken} length=${controlToken?.length ?? 0}`)
+  writeLog({ at: now(), type: "control-token", configured: !!controlToken, length: controlToken?.length ?? 0 })
   mkdir(join(config.dataDir, "logs"), { recursive: true }).catch(() => {})
   const record = (item) => { records.unshift({ at: now(), ...item }); records.splice(100) }
   const trafficLog = (target, item) => {
@@ -72,6 +74,10 @@ export function createGateway(config) {
       if (req.method === "GET" && req.url === "/") { res.writeHead(200, { "content-type": "text/html; charset=utf-8" }); return res.end(page) }
       if (req.method === "GET" && req.url === "/favicon.ico") { res.writeHead(204); return res.end() }
       if (req.method === "GET" && req.url === "/health") return json(res, 200, { status: "ok", ...stats })
+      if (req.method === "GET" && req.url === "/__control/health") {
+        if (!controlToken || req.headers["x-model-gateway-control"] !== controlToken) return json(res, 401, { error: "Unauthorized" })
+        return json(res, 200, { status: "ok", ...stats })
+      }
       if (req.method === "POST" && req.url === "/__control/shutdown") {
         if (!["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(req.socket.remoteAddress)) return json(res, 403, { error: "Loopback only" })
         if (!controlToken || req.headers["x-model-gateway-control"] !== controlToken) return json(res, 401, { error: "Unauthorized" })

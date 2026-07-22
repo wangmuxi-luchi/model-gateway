@@ -16,3 +16,6 @@ logs/
 node_modules/
 *.log
 dist/
+.venv/
+native/**/bin/
+native/**/obj/
