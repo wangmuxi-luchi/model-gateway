@@ -2,7 +2,9 @@
 
 本地 OpenAI-compatible 网关，用于统一管理多个上游 Provider，并在请求失败时按优先级自动切换。
 
-## 功能介绍
+## 开始使用
+
+### 功能介绍
 
 - 提供 `/v1/chat/completions`，兼容 OpenAI Chat Completions 请求格式。
 - 提供 `/v1/models`，聚合所有 Provider 的模型列表并按模型 ID 去重。
@@ -18,30 +20,39 @@
 
 网关只代理配置的 OpenAI-compatible API，不会拦截其他 HTTP/HTTPS 流量。
 
-## 环境要求
+### 管理页面
+
+![Model Gateway 管理页面](docs/management-ui.png)
+
+### 环境要求
+
+源码运行需要：
 
 - Node.js 22 或更高版本。
 - npm。
-- 可访问上游 Provider 的网络环境。
 
-## 快速开始
+使用 Windows 发布版 EXE 不需要安装 Node.js、npm 或其他运行时，只需要：
 
-### 1. 安装依赖
+- 64 位 Windows 系统。
+- 能够访问已配置的上游 Provider 的网络环境。
 
-在 `model-gateway` 目录执行：
+### 快速开始
 
-```powershell
-npm install
-```
+### 1. 启动服务
 
-当前项目没有运行时依赖，执行该命令主要用于保持标准 npm 工作流。
+下载 Windows 发布版后，将 EXE 放到一个独立目录中。网关提供两种启动方式：
 
-### 2. 启动服务
+- **直接启动**：运行 `model-gateway.exe`。适合希望手动控制启动和退出、需要查看实时命令行日志，或将网关作为后台服务管理的场景。网关本身可以独立运行，不需要托盘程序。
+- **托盘模式**：运行 `model-gateway-tray.exe`。适合日常桌面使用，网关会在后台运行，并通过系统托盘提供打开管理页面、查看状态和退出等操作。托盘模式需要将 `model-gateway-tray.exe` 与 `model-gateway.exe` 放在同一目录。
+
+**选择建议：** 普通桌面用户优先使用托盘模式，操作更直观且不会弹出命令行窗口；开发、调试或需要查看实时日志时使用直接启动。
+
+源码开发时则在项目目录执行 `npm start`。
 
 网关支持空配置首次启动，不需要预先创建或编辑 `model-gateway.json`：
 
 ```powershell
-npm start
+.\model-gateway.exe start
 ```
 
 启动后打开管理页面：
@@ -49,6 +60,8 @@ npm start
 ```text
 http://127.0.0.1:8787/
 ```
+
+### 2. 添加 Provider
 
 点击“添加 Provider”，填写 Provider 名称、Base URL、API Key、模型覆盖和优先级，保存后配置会自动写入 `model-gateway.json`。
 
@@ -109,7 +122,7 @@ http://127.0.0.1:8787/v1
 
 网关下游 API Key 仅用于客户端侧配置。Provider 的真实上游 API Key 配置在网关自己的 Provider 配置中。
 
-## 环境配置
+### 环境配置
 
 ### 配置文件路径
 
@@ -173,7 +186,7 @@ Invoke-WebRequest `
   -Headers @{ Authorization = "Bearer replace-with-gateway-token" }
 ```
 
-## 常用接口
+### 常用接口
 
 ### 下游接口
 
@@ -207,9 +220,7 @@ Provider 模型查询默认使用缓存，强制刷新：
 GET /admin/providers/:id/models?refresh=1
 ```
 
-## 运行与调试
-
-## Windows 单文件 EXE
+### Windows 单文件 EXE
 
 如果目标电脑不能安装 Node.js 或 npm，可以在一台有 Node.js 22 和 npm 的 Windows x64 构建机上生成单文件版本。目标电脑不需要安装 Node.js、npm、Python 或 pip。
 
@@ -220,7 +231,25 @@ npm install
 npm run build:win
 ```
 
-构建结果为 `dist/model-gateway.exe` 和可选的 `dist/model-gateway-tray.exe`。将网关 EXE 复制到目标电脑后可以直接双击启动。双击时程序默认执行 `start`，启动后打开 `http://127.0.0.1:8787/`。也可以在命令行中显式运行：
+构建结果为两个 Windows x64 可执行文件，建议将它们作为 GitHub Release 附件发布，不提交到 Git 仓库。
+
+### `model-gateway.exe`
+
+网关主程序，负责：
+
+- 启动 OpenAI-compatible HTTP 网关。
+- 提供 `/v1/chat/completions` 和 `/v1/models` 接口。
+- 管理 Provider、模型缓存、健康状态、冷却和 fallback。
+- 提供管理页面、管理 API 和通信日志。
+- 可独立运行，不需要托盘程序。
+
+将 `model-gateway.exe` 复制到目标电脑后可以直接双击启动。双击时程序默认执行 `start`，启动后打开：
+
+```text
+http://127.0.0.1:8787/
+```
+
+也可以在命令行中显式运行：
 
 ```powershell
  .\model-gateway.exe start
@@ -238,13 +267,21 @@ $env:MODEL_GATEWAY_CONFIG = "D:\config\model-gateway.json"
 Remove-Item Env:MODEL_GATEWAY_CONFIG
 ```
 
-`build:win` 当前只生成 Windows x64 产物。构建脚本会先将本地源码 bundle，再使用 Node Single Executable Application 注入运行时；发布目录中的 `model-gateway.json`、密钥和 `dataDir` 内容不会被打包。EXE 仍需能够访问已配置的上游 Provider 网络地址。
+发布的 EXE 仍需能够访问已配置的上游 Provider 网络地址。配置文件和运行数据不会嵌入 EXE，升级程序时保留 `model-gateway.json` 和 `data` 目录即可保留现有配置与状态。
 
-可选托盘 EXE 由独立的 self-contained .NET WinForms GUI helper 构建，不依赖 PowerShell 或目标机上的 .NET。托盘和 EXE 使用 `native/TrayHelper/assets/tray.ico` 中的多尺寸图标资源。它会启动同目录下的 `model-gateway.exe`，等待 `/health` 成功后自动打开管理页面，并提供打开页面、查看状态、打开 `data/logs` 和退出菜单。托盘菜单退出会先通过仅限本机的随机控制令牌请求网关有序停止，再退出托盘；直接启动网关不依赖托盘。`build:win` 会验证网关 PE 子系统为 Console、托盘 PE 子系统为 Windows GUI。托盘诊断日志位于 `data/tray-debug.log`，不记录 API Key 或控制令牌。
+### `model-gateway-tray.exe`
 
-托盘诊断日志还会记录托盘自身 PID、托盘启动的网关 PID，以及启动前后监听端口对应的占用 PID。托盘通过受控制令牌保护的 `/__control/health` 确认连接的是自己启动的网关；如果端口已被其他网关实例占用，不会误接管该实例。图标由项目内的 `uv` 虚拟环境和 Pillow 从原始 PNG 转换为多尺寸 ICO；虚拟环境位于 `.venv`，不参与发布构建。
+可选的托盘启动器，负责：
 
-启动时命令行会打印关键通信节点，例如：
+- 启动同目录下的 `model-gateway.exe`。
+- 等待网关 `/health` 检查成功。
+- 自动打开管理页面。
+- 提供打开管理页面、查看状态、打开 `data/logs` 和退出菜单。
+- 提供安全退出网关的菜单操作，避免误关闭其他网关实例。
+
+托盘程序需要与 `model-gateway.exe` 放在同一目录；直接启动网关时不需要托盘程序。
+
+直接从命令行启动 `model-gateway.exe` 时，会在当前控制台打印关键通信节点，例如：
 
 ```text
 [gateway] DOWNSTREAM SEND POST /v1/chat/completions
@@ -254,7 +291,9 @@ Remove-Item Env:MODEL_GATEWAY_CONFIG
 [gateway] DOWNSTREAM RECV status=200
 ```
 
-命令行只打印摘要，不打印请求 body、API Key 或完整响应内容。
+通过托盘启动网关时不会显示命令行窗口；此时可以查看网关运行目录下的 `data/logs/gateway.log`。
+
+无论直接启动还是通过托盘启动，网关日志只记录通信摘要，不打印请求 body、API Key 或完整响应内容；日志文件中的敏感字段同样会脱敏。
 
 运行测试：
 
@@ -268,10 +307,45 @@ npm test
 npm run check
 ```
 
-## 安全注意事项
+### 安全注意事项
 
 - 不要提交 `model-gateway.json`。
 - 不要在 `config.example.json` 或 README 中写入真实 API Key。
 - 不要将 `dataDir` 下的运行时状态文件提交到仓库。
 - 管理页面和 `/admin/*` 接口建议只绑定本机，或配置 `token` 后再暴露到其他网络。
 - Provider API Key 只保存在本地配置中，命令行和管理 API 会脱敏处理。
+
+## 开发与发布
+
+### 本地开发
+
+在源码目录执行：
+
+```powershell
+npm install
+npm start
+```
+
+运行检查和测试：
+
+```powershell
+npm run check
+npm test
+```
+
+### Windows 构建
+
+在源码目录执行：
+
+```powershell
+npm run build:win
+```
+
+构建结果为：
+
+```text
+dist/model-gateway.exe
+dist/model-gateway-tray.exe
+```
+
+Windows EXE 应作为 GitHub Release 附件发布，不提交到 Git 仓库。

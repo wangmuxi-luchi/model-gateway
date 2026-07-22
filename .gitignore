@@ -16,6 +16,9 @@ logs/
 node_modules/
 *.log
 dist/
+# Release artifacts are published through GitHub Releases, not Git history.
+*.exe
+*.zip
 .venv/
 native/**/bin/
 native/**/obj/

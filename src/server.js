@@ -196,9 +196,9 @@ export function createGateway(config) {
           const error = Object.assign(new Error(`Upstream rejected request (${upstream.status})`), { status: upstream.status, nonRetry: true })
           throw error
         }
-         if (!upstream.ok) { await health.failure(candidate, model, `http-${upstream.status}`); return upstream }
-         await health.success(candidate, model, Date.now() - started)
-        if (!stream) return upstream
+          if (!upstream.ok) { await health.failure(candidate, model, `http-${upstream.status}`); return upstream }
+          await health.success(candidate, model, Date.now() - started)
+         if (!stream) { upstream.gatewayBody = Buffer.from(await upstream.arrayBuffer()); return upstream }
         res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" })
         try {
           for await (const chunk of upstream.body) {
@@ -215,8 +215,8 @@ export function createGateway(config) {
        for (const candidate of eligible) if (halfOpen.has(candidate.id)) health.release(candidate, candidate.model ?? requestedModel)
       if (result.errors.length) { stats.failures += result.errors.length; stats.retries += result.errors.length; record({ type: "fallback", request: id, selected: result.candidate.id, errors: result.errors }) }
       else record({ type: "success", request: id, selected: result.candidate.id })
-       if (!stream && result.result.ok) {
-         const responseBody = Buffer.from(await result.result.arrayBuffer())
+        if (!stream && result.result.ok) {
+          const responseBody = result.result.gatewayBody
          res.writeHead(result.result.status, { "content-type": "application/json" })
          res.end(responseBody)
          trafficLog(downstreamLogs, { direction: "downstream", type: "response", requestId: id, status: result.result.status, headers: { "content-type": "application/json" }, body: preview(responseBody.toString("utf8")) })
