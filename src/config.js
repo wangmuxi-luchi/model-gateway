@@ -2,9 +2,9 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { dirname, isAbsolute, join, resolve } from "node:path"
 
-const pathOf = (value) => {
+const pathOf = (value, baseDir = process.cwd()) => {
   if (value.startsWith("~/")) return join(homedir(), value.slice(2))
-  return isAbsolute(value) ? value : resolve(value)
+  return isAbsolute(value) ? value : resolve(baseDir, value)
 }
 
 export function validateConfig(input, options = {}) {
@@ -32,7 +32,7 @@ export function validateConfig(input, options = {}) {
   return {
     host,
     port,
-    dataDir: pathOf(typeof input.dataDir === "string" ? input.dataDir : "~/.local/share/model-gateway"),
+    dataDir: pathOf(options.defaultDataDir ?? "data", options.baseDir),
     maxAttempts: Number.isInteger(input.maxAttempts) && input.maxAttempts > 0 ? input.maxAttempts : normalized.length,
     requestTimeoutMs: Number.isInteger(input.requestTimeoutMs) && input.requestTimeoutMs > 0 ? input.requestTimeoutMs : 60000,
      token: typeof input.token === "string" ? input.token : undefined,
@@ -48,7 +48,7 @@ export async function loadConfig(file, options = {}) {
   try { return validateConfig(JSON.parse(await readFile(file, "utf8")), options) }
   catch (error) {
     if (error.code !== "ENOENT" || !options.allowEmpty) throw error
-    return validateConfig({ listen: "127.0.0.1:8787", dataDir: "~/.local/share/model-gateway", candidates: [] }, options)
+    return validateConfig({ listen: "127.0.0.1:8787", candidates: [] }, options)
   }
 }
 
@@ -58,7 +58,6 @@ export async function saveConfig(file, config) {
   const temp = `${file}.${process.pid}.tmp`
   const output = {
     listen: `${config.host}:${config.port}`,
-    dataDir: config.dataDir,
     maxAttempts: config.maxAttempts,
     requestTimeoutMs: config.requestTimeoutMs,
     activeWindowMs: config.activeWindowMs,

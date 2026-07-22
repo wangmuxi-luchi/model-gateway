@@ -209,6 +209,39 @@ GET /admin/providers/:id/models?refresh=1
 
 ## 运行与调试
 
+## Windows 单文件 EXE
+
+如果目标电脑不能安装 Node.js 或 npm，可以在一台有 Node.js 22 和 npm 的 Windows x64 构建机上生成单文件版本。目标电脑不需要安装 Node.js、npm、Python 或 pip。
+
+在源码目录执行：
+
+```powershell
+npm install
+npm run build:win
+```
+
+构建结果为 `dist/model-gateway.exe` 和可选的 `dist/model-gateway-tray.exe`。将网关 EXE 复制到目标电脑后可以直接双击启动。双击时程序默认执行 `start`，启动后打开 `http://127.0.0.1:8787/`。也可以在命令行中显式运行：
+
+```powershell
+ .\model-gateway.exe start
+```
+
+首次启动可以不提供配置文件，然后打开 `http://127.0.0.1:8787/` 添加 Provider。对于 EXE，默认会从 EXE 所在目录读取 `model-gateway.json`，并将运行数据固定写入 EXE 旁的 `data` 目录，不依赖 Windows 用户名。配置文件不会嵌入 EXE，升级 EXE 时保留该文件和 `data` 目录即可保留配置与运行状态。便携发布不需要填写 `dataDir`。
+
+如果配置中使用相对路径，例如 `"dataDir": "data"`，EXE 模式下路径相对于 EXE 所在目录；也可以填写绝对路径。源码开发运行时相对路径仍相对于当前工作目录。
+
+如果配置文件位于其他位置：
+
+```powershell
+$env:MODEL_GATEWAY_CONFIG = "D:\config\model-gateway.json"
+.\model-gateway.exe start
+Remove-Item Env:MODEL_GATEWAY_CONFIG
+```
+
+`build:win` 当前只生成 Windows x64 产物。构建脚本会先将本地源码 bundle，再使用 Node Single Executable Application 注入运行时；发布目录中的 `model-gateway.json`、密钥和 `dataDir` 内容不会被打包。EXE 仍需能够访问已配置的上游 Provider 网络地址。
+
+可选托盘 EXE 会启动同目录下的 `model-gateway.exe`，自动打开管理页面，并提供打开页面、查看状态、打开 `dataDir/logs` 和退出菜单。托盘菜单退出会先通过仅限本机的随机控制令牌请求网关有序停止，再退出托盘；直接启动网关不依赖托盘。持久化日志位于配置的 `dataDir/logs/gateway.log`，内容为摘要且沿用请求头脱敏规则。
+
 启动时命令行会打印关键通信节点，例如：
 
 ```text

@@ -5,6 +5,11 @@
   "scripts": {
     "start": "node src/cli.js start",
     "test": "node --test test/*.test.js",
-    "check": "node -e \"for (const file of ['src/config.js','src/fallback.js','src/server.js','src/cli.js']) { const cp = require('node:child_process').spawnSync(process.execPath, ['--check', file], { stdio: 'inherit' }); if (cp.status) process.exit(cp.status) }\""
+    "check": "node -e \"for (const file of ['src/config.js','src/fallback.js','src/server.js','src/cli.js']) { const cp = require('node:child_process').spawnSync(process.execPath, ['--check', file], { stdio: 'inherit' }); if (cp.status) process.exit(cp.status) }\"",
+    "build:win": "node scripts/build-exe.js"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0",
+    "postject": "^1.0.0-alpha.6"
   }
 }

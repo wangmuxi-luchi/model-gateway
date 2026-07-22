@@ -5,6 +5,9 @@ import { saveConfig, validateConfig } from "./config.js"
 import { page } from "./ui.js"
 import { HealthStore } from "./health.js"
 import { listModels } from "./models.js"
+import { now } from "./time.js"
+import { appendFile, mkdir } from "node:fs/promises"
+import { join } from "node:path"
 
 const json = (res, status, body) => {
   res.writeHead(status, { "content-type": "application/json" })
@@ -31,6 +34,7 @@ const headers = (key, request) => ({
 const clean = (value) => ({ error: value.message, attempts: value.attempts ?? [] })
 const preview = (value) => typeof value === "string" ? value.slice(0, 2000) : value
 const headersForLog = (headers) => Object.fromEntries(Object.entries(headers ?? {}).filter(([key]) => !["authorization", "cookie", "set-cookie"].includes(key.toLowerCase())))
+const log = (message) => console.log(`${now()} ${message}`)
 
 export function createGateway(config) {
   const records = []
@@ -40,9 +44,13 @@ export function createGateway(config) {
   const recentRequestModels = new Map()
   const health = new HealthStore(config.dataDir, config)
   const stats = { requests: 0, failures: 0, retries: 0 }
-  const record = (item) => { records.unshift({ at: new Date().toISOString(), ...item }); records.splice(100) }
+  const controlToken = process.env.MODEL_GATEWAY_CONTROL_TOKEN
+  const logFile = join(config.dataDir, "logs", "gateway.log")
+  const writeLog = (entry) => appendFile(logFile, JSON.stringify(entry) + "\n").catch(() => {})
+  mkdir(join(config.dataDir, "logs"), { recursive: true }).catch(() => {})
+  const record = (item) => { records.unshift({ at: now(), ...item }); records.splice(100) }
   const trafficLog = (target, item) => {
-    const entry = { at: new Date().toISOString(), ...item }
+    const entry = { at: now(), ...item }
     target.unshift(entry); target.splice(200)
     const side = item.direction === "upstream" ? "UPSTREAM" : "DOWNSTREAM"
     const node = item.type === "request" ? "SEND" : "RECV"
@@ -50,7 +58,8 @@ export function createGateway(config) {
     const model = item.model ? ` model=${item.model}` : ""
     const status = item.status !== undefined ? ` status=${item.status}` : ""
     const duration = item.durationMs !== undefined ? ` duration=${item.durationMs}ms` : ""
-    console.log(`[gateway] ${side} ${node}${provider}${model} ${item.method ?? ""} ${item.path ?? ""}${status}${duration}`.trim())
+    log(`[gateway] ${side} ${node}${provider}${model} ${item.method ?? ""} ${item.path ?? ""}${status}${duration}`.trim())
+    writeLog({ ...entry, body: entry.body === undefined ? undefined : preview(entry.body) })
   }
   const findProvider = (id) => config.candidates.find((item) => item.id === id)
   const providerKey = async (item) => item.apiKey
@@ -58,12 +67,28 @@ export function createGateway(config) {
   const server = createServer(async (req, res) => {
     const id = randomUUID()
     const halfOpen = new Set()
+    let requestedModel
     try {
       if (req.method === "GET" && req.url === "/") { res.writeHead(200, { "content-type": "text/html; charset=utf-8" }); return res.end(page) }
       if (req.method === "GET" && req.url === "/favicon.ico") { res.writeHead(204); return res.end() }
       if (req.method === "GET" && req.url === "/health") return json(res, 200, { status: "ok", ...stats })
+      if (req.method === "POST" && req.url === "/__control/shutdown") {
+        if (!["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(req.socket.remoteAddress)) return json(res, 403, { error: "Loopback only" })
+        if (!controlToken || req.headers["x-model-gateway-control"] !== controlToken) return json(res, 401, { error: "Unauthorized" })
+        json(res, 202, { ok: true }); setImmediate(() => server.close())
+        return
+      }
       if (req.url.startsWith("/admin/") && config.token && req.headers.authorization !== `Bearer ${config.token}`) return json(res, 401, { error: "Unauthorized" })
        if (req.method === "GET" && req.url === "/admin/providers") return json(res, 200, config.candidates.map(({ order, apiKey, ...item }) => ({ ...item, name: item.name ?? item.id, hasApiKey: !!apiKey, probeModel: probeModel(item) ?? null, health: health.get(item, item.model) ?? health.latest(item) ?? null, models: modelCache.get(item.id) ?? null })))
+       if (req.method === "GET" && req.url === "/admin/config") return json(res, 200, { listen: `${config.host}:${config.port}`, maxAttempts: config.maxAttempts, requestTimeoutMs: config.requestTimeoutMs, token: config.token ?? "", baseUrl: `http://${config.host}:${config.port}/v1` })
+       if (req.method === "PUT" && req.url === "/admin/config") {
+         const input = await body(req)
+         const next = validateConfig({ ...config, listen: typeof input.listen === "string" ? input.listen : `${config.host}:${config.port}`, maxAttempts: input.maxAttempts, requestTimeoutMs: input.requestTimeoutMs, token: input.token }, { allowEmpty: true, defaultDataDir: config.dataDir })
+         const restartRequired = next.host !== config.host || next.port !== config.port
+         Object.assign(config, { maxAttempts: next.maxAttempts, requestTimeoutMs: next.requestTimeoutMs, token: next.token })
+         await saveConfig(config.configFile, { ...config, host: next.host, port: next.port })
+         return json(res, 200, { ok: true, restartRequired })
+       }
        if (req.method === "GET" && req.url === "/admin/records") return json(res, 200, records)
        if (req.method === "GET" && req.url === "/admin/logs") return json(res, 200, { downstream: downstreamLogs, upstream: upstreamLogs })
       if (req.method === "GET" && req.url === "/admin/health") return json(res, 200, health.snapshot())
@@ -72,7 +97,7 @@ export function createGateway(config) {
         if (!candidate) throw Object.assign(new Error("Unknown candidate"), { status: 404 })
          const key = await providerKey(candidate); const cached = modelCache.get(id)
          if (cached && url.searchParams.get("refresh") !== "1") return json(res, 200, cached)
-         const result = { provider: id, models: await listModels(candidate, key), refreshedAt: new Date().toISOString(), error: null }; modelCache.set(id, result); return json(res, 200, result)
+          const result = { provider: id, models: await listModels(candidate, key), refreshedAt: now(), error: null }; modelCache.set(id, result); return json(res, 200, result)
       }
        if (req.method === "GET" && req.url.startsWith("/admin/providers/") && req.url.endsWith("/history")) {
          const id = decodeURIComponent(req.url.slice("/admin/providers/".length, -"/history".length)); if (!findProvider(id)) throw Object.assign(new Error("Unknown provider"), { status: 404 })
@@ -113,7 +138,7 @@ export function createGateway(config) {
            const cached = modelCache.get(candidate.id)
            try {
              const items = cached?.models ?? await listModels(candidate, await providerKey(candidate))
-             if (!cached) modelCache.set(candidate.id, { provider: candidate.id, models: items, refreshedAt: new Date().toISOString(), error: null })
+              if (!cached) modelCache.set(candidate.id, { provider: candidate.id, models: items, refreshedAt: now(), error: null })
              for (const model of items) if (!models.has(model.id)) models.set(model.id, { ...model, object: "model" })
            } catch (error) { errors.push({ providerId: candidate.id, error: error.message }) }
          }
@@ -127,12 +152,12 @@ export function createGateway(config) {
        health.touch()
       stats.requests++
        if (!Array.isArray(input.messages)) {
-         console.log(`[gateway] REQUEST REJECTED request=${id} reason=messages-not-array`)
+          log(`[gateway] REQUEST REJECTED request=${id} reason=messages-not-array`)
          return json(res, 400, { error: "messages must be an array" })
        }
       const stream = input.stream === true
       let output = false
-      const requestedModel = input.model
+       requestedModel = input.model
         const eligible = config.candidates.filter((candidate) => {
           const entry = health.get(candidate, candidate.model ?? requestedModel)
           if (!entry || entry.status === "unsupported") return !entry
@@ -145,10 +170,10 @@ export function createGateway(config) {
           return true
        })
        if (!eligible.length) {
-         console.log(`[gateway] ROUTE BLOCKED request=${id} reason=no-eligible-provider model=${requestedModel ?? "(none)"}`)
+          log(`[gateway] ROUTE BLOCKED request=${id} reason=no-eligible-provider model=${requestedModel ?? "(none)"}`)
          return json(res, 503, { error: "No eligible provider is available" })
        }
-       console.log(`[gateway] ROUTE selected=${eligible.map((candidate) => candidate.name ?? candidate.id).join(",")} attempts=${Math.min(config.maxAttempts, eligible.length)}`)
+        log(`[gateway] ROUTE selected=${eligible.map((candidate) => candidate.name ?? candidate.id).join(",")} attempts=${Math.min(config.maxAttempts, eligible.length)}`)
        const result = await attempt(eligible, config.maxAttempts, config.requestTimeoutMs, async (candidate, signal) => {
           const model = candidate.model ?? requestedModel
          if (model) recentRequestModels.set(candidate.id, model)
@@ -194,11 +219,11 @@ export function createGateway(config) {
      } catch (error) {
        for (const candidate of config.candidates) if (halfOpen.has(candidate.id)) health.release(candidate, candidate.model ?? requestedModel ?? health.latest(candidate)?.model)
        stats.failures++
-       console.log(`[gateway] ERROR request=${id} status=${error.status ?? 502} message=${error.message}`)
+        log(`[gateway] ERROR request=${id} status=${error.status ?? 502} message=${error.message}`)
       record({ type: "error", request: id, error: error.message, attempts: error.attempts ?? [] })
       if (res.headersSent) return res.destroy()
       json(res, error.status ?? 502, clean(error))
     }
   })
-  return { server, records, downstreamLogs, upstreamLogs, stats, health, start: async () => { await health.load(); return new Promise((resolve) => server.listen(config.port, config.host, resolve)) }, stop: () => new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve())) }
+  return { server, records, downstreamLogs, upstreamLogs, stats, health, start: async () => { await health.load(); return new Promise((resolve, reject) => { server.once("error", reject); server.listen(config.port, config.host, () => { server.off("error", reject); resolve() }) }) }, stop: () => new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve())) }
 }
