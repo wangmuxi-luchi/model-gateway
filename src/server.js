@@ -35,6 +35,7 @@ const clean = (value) => ({ error: value.message, attempts: value.attempts ?? []
 const preview = (value) => typeof value === "string" ? value.slice(0, 2000) : value
 const headersForLog = (headers) => Object.fromEntries(Object.entries(headers ?? {}).filter(([key]) => !["authorization", "cookie", "set-cookie"].includes(key.toLowerCase())))
 const log = (message) => console.log(`${now()} ${message}`)
+const errorForLog = (error) => ({ name: error?.name, message: error?.message, code: error?.code, syscall: error?.syscall, cause: error?.cause?.message ?? error?.cause?.code })
 
 export function createGateway(config) {
   const records = []
@@ -180,7 +181,7 @@ export function createGateway(config) {
          return json(res, 503, { error: "No eligible provider is available" })
        }
         log(`[gateway] ROUTE selected=${eligible.map((candidate) => candidate.name ?? candidate.id).join(",")} attempts=${Math.min(config.maxAttempts, eligible.length)}`)
-       const result = await attempt(eligible, config.maxAttempts, config.requestTimeoutMs, async (candidate, signal) => {
+        const result = await attempt(eligible, config.maxAttempts, config.requestTimeoutMs, async (candidate, clock) => {
           const model = candidate.model ?? requestedModel
          if (model) recentRequestModels.set(candidate.id, model)
         const started = Date.now()
@@ -188,9 +189,15 @@ export function createGateway(config) {
          const request = { ...input, model }
           trafficLog(upstreamLogs, { direction: "upstream", type: "request", requestId: id, providerId: candidate.id, providerName: candidate.name ?? candidate.id, model, method: "POST", path: `${candidate.baseUrl}/chat/completions`, headers: { accept: headers(account.credential.key, request).accept, "content-type": "application/json" }, body: preview(request) })
          const upstreamStarted = Date.now()
-         const upstream = await fetch(`${candidate.baseUrl}/chat/completions`, {
-          method: "POST", headers: headers(account.credential.key, request), body: JSON.stringify(request), signal,
-         })
+          let upstream
+          try {
+            upstream = await fetch(`${candidate.baseUrl}/chat/completions`, {
+             method: "POST", headers: headers(account.credential.key, request), body: JSON.stringify(request), signal: clock.signal,
+            })
+          } catch (error) {
+            trafficLog(upstreamLogs, { direction: "upstream", type: "error", requestId: id, providerId: candidate.id, providerName: candidate.name ?? candidate.id, model, phase: "fetch", durationMs: Date.now() - upstreamStarted, error: errorForLog(error) })
+            throw error
+          }
           trafficLog(upstreamLogs, { direction: "upstream", type: "response", requestId: id, providerId: candidate.id, providerName: candidate.name ?? candidate.id, model, status: upstream.status, headers: headersForLog(Object.fromEntries(upstream.headers)), durationMs: Date.now() - upstreamStarted })
         if (!upstream.ok && !isRetryable(upstream.status)) {
           const error = Object.assign(new Error(`Upstream rejected request (${upstream.status})`), { status: upstream.status, nonRetry: true })
@@ -199,21 +206,23 @@ export function createGateway(config) {
           if (!upstream.ok) { await health.failure(candidate, model, `http-${upstream.status}`); return upstream }
           await health.success(candidate, model, Date.now() - started)
          if (!stream) { upstream.gatewayBody = Buffer.from(await upstream.arrayBuffer()); return upstream }
-        res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" })
+          res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" })
+         clock.pause()
         try {
           for await (const chunk of upstream.body) {
             output = true
             res.write(chunk)
           }
-        } catch (error) {
-          if (output) error.nonRetry = true
-          throw error
+         } catch (error) {
+           if (output) error.nonRetry = true
+           trafficLog(upstreamLogs, { direction: "upstream", type: "error", requestId: id, providerId: candidate.id, providerName: candidate.name ?? candidate.id, model, phase: "stream-read", outputStarted: output, durationMs: Date.now() - upstreamStarted, error: errorForLog(error) })
+           throw error
         }
         res.end()
          return { ok: true, status: 200 }
        })
        for (const candidate of eligible) if (halfOpen.has(candidate.id)) health.release(candidate, candidate.model ?? requestedModel)
-      if (result.errors.length) { stats.failures += result.errors.length; stats.retries += result.errors.length; record({ type: "fallback", request: id, selected: result.candidate.id, errors: result.errors }) }
+       if (result.errors.length) { stats.failures += result.errors.length; stats.retries += result.errors.length; log(`[gateway] FALLBACK request=${id} selected=${result.candidate.id} errors=${JSON.stringify(result.errors)}`); record({ type: "fallback", request: id, selected: result.candidate.id, errors: result.errors }) }
       else record({ type: "success", request: id, selected: result.candidate.id })
         if (!stream && result.result.ok) {
           const responseBody = result.result.gatewayBody
@@ -225,8 +234,9 @@ export function createGateway(config) {
      } catch (error) {
        for (const candidate of config.candidates) if (halfOpen.has(candidate.id)) health.release(candidate, candidate.model ?? requestedModel ?? health.latest(candidate)?.model)
        stats.failures++
-        log(`[gateway] ERROR request=${id} status=${error.status ?? 502} message=${error.message}`)
-      record({ type: "error", request: id, error: error.message, attempts: error.attempts ?? [] })
+         log(`[gateway] ERROR request=${id} status=${error.status ?? 502} details=${JSON.stringify(errorForLog(error))}`)
+       writeLog({ at: now(), type: "request-error", direction: "gateway", requestId: id, error: errorForLog(error), attempts: error.attempts ?? [] })
+       record({ type: "error", request: id, error: error.message, details: errorForLog(error), attempts: error.attempts ?? [] })
       if (res.headersSent) return res.destroy()
       json(res, error.status ?? 502, clean(error))
     }

@@ -18,6 +18,7 @@ const upstream = (handler) => new Promise((resolve) => {
 
 const gateway = async (baseUrl, dataDir, extra = {}) => {
   const config = validateConfig({ listen: "127.0.0.1:0", dataDir, candidates: [{ id: "one", apiKey: "secret", baseUrl, model: "chosen", priority: 1, timeoutMs: 1000 }, ...(extra.candidates ?? [])] })
+  if (extra.requestTimeoutMs) config.requestTimeoutMs = extra.requestTimeoutMs
   config.port = Number(config.port) || 0
   const app = createGateway(config)
   await app.start()
@@ -59,6 +60,20 @@ test("does not fail over after SSE output begins", async () => {
   assert.equal(response.status, 200)
   await response.text().catch(() => {})
   assert.equal(backupCalls, 0)
+  await app.app.stop()
+})
+
+test("does not abort a stream after the first chunk when total timeout elapses", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gateway-"))
+  const baseUrl = await upstream((_req, res) => {
+    res.writeHead(200, { "content-type": "text/event-stream" })
+    res.write("data: first\n\n")
+    setTimeout(() => { res.write("data: second\n\n"); res.end() }, 80)
+  })
+  const app = await gateway(baseUrl, dir, { requestTimeoutMs: 20 })
+  const response = await fetch(`${app.url}/v1/chat/completions`, { method: "POST", body: JSON.stringify({ stream: true, messages: [] }) })
+  assert.equal(response.status, 200)
+  assert.match(await response.text(), /second/)
   await app.app.stop()
 })
 
